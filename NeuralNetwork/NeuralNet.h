@@ -6,7 +6,7 @@
 
 struct NeuralNet
 {
-	NeuralNet(const int inputs, const int outputs, const int layers, const int neurons);
+	NeuralNet(const unsigned int inputs, const unsigned int outputs, const unsigned int layers, const unsigned int neurons, const unsigned int batchSize);
 
 	void createLayers();
 	
@@ -17,10 +17,11 @@ struct NeuralNet
 	OutputLayer outputLayer;
 	std::vector<HiddenLayer> layers;
 	
-	const int numberOfLayers;
-	const int numberOfInputs;
-	const int numberOfOutputs;
-	const int neuronsPerLayer;
+	const unsigned int numberOfLayers;
+	const unsigned int numberOfInputs;
+	const unsigned int numberOfOutputs;
+	const unsigned int neuronsPerLayer;
+	const unsigned int batchSize;
 	//std::mutex lock;
 };
 

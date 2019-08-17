@@ -4,25 +4,27 @@
 int getNumberOfWeights (NeuralNet& neuralNet);
 void updateNetworkWeights (NeuralNet& neuralNet);
 void calcScaledTotalGrad (NeuralNet& neuralNet);
-void calcGradFromDatum (double* d_gradient, const Datum& input, NeuralNet& neuralNet);
-__global__ void gradFromOutputLayer (const double* d_dydw, double* singleGradient, int size);
-__global__ void gradFromSecondHidden (double* d_dydx, double* d_dydw, double* singleGradient, int neuronsPerLayer);
-__global__ void gradFromFirstHidden (double* d_dydxOut, double* d_dydxHid, double* d_dydw, double* singleGradient, int iSize, int jSize);
+void calcBatchGrad (double* d_batchsGradient, NeuralNet& neuralNet);
+__global__ void gradFromOutputLayer (double* d_dydw, double* singleGradient, unsigned int* direction, const unsigned int size, const unsigned int numOutputs, const unsigned int batchSize, const unsigned int weightsSize);
+__global__ void gradFromSecondHidden (double* d_dydx, double* d_dydw, double* singleGradient, unsigned int* direction, const unsigned int neuronsPerLayer, const unsigned int numOutputs, const unsigned int batchSize, const unsigned int weightsSize);
+__global__ void gradFromFirstHidden (double* d_dydxOut, double* d_dydxHid, double* d_dydw, double* singleGradient, unsigned int* direction, const unsigned int iSize, const unsigned int jSize, const unsigned int numOutputs, const unsigned int batchSize, const unsigned int weightsSize);
 
 using namespace std;
 
-Datum::Datum (double lDist, double fDist, double rDist, Direction direction) :
-  fDist (fDist), lDist (lDist), rDist (rDist), direction (direction)
+Datum::Datum (double lDist, double fDist, double rDist) :
+  fDist (fDist), lDist (lDist), rDist (rDist)
 {}
 
 bool running = true;
 static double scale = 1 / 10000;
-vector<Datum> dataVector;
-int weightsSize = 0;
+Datum* dataVector = new Datum[dataSize];
+Direction* resultsVector = new Direction[dataSize];
+unsigned int weightsSize = 0;
 static double* d_weights = nullptr;
 static double* d_gradient = nullptr;
-static double* d_singleGradient = nullptr;
+static double* d_batchGradient = nullptr;
 static double* d_input = nullptr;
+static unsigned int* d_direction = nullptr;
 
 __global__ void incrementWeights (double* d_weights, double* d_gradient)
 {
@@ -35,8 +37,12 @@ void gradientDescentLoop (NeuralNet& neuralNet, int batches)
   weightsSize = getNumberOfWeights (neuralNet);
   CUDA_CALL (cudaMalloc (&d_weights, weightsSize * sizeof (double)));
   CUDA_CALL (cudaMalloc (&d_gradient, weightsSize * sizeof (double)));
-  CUDA_CALL (cudaMalloc (&d_singleGradient, weightsSize * sizeof (double)));
-  CUDA_CALL (cudaMalloc (&d_input, 4 * sizeof (double)));
+  CUDA_CALL (cudaMalloc (&d_batchGradient, dataSize * weightsSize * sizeof (double)));
+  CUDA_CALL (cudaMalloc (&d_input, dataSize * 4 * sizeof (double)));
+  CUDA_CALL (cudaMalloc (&d_direction, dataSize * sizeof (unsigned int)));
+
+  CUDA_CALL (cudaMemcpy (d_input, dataVector, dataSize * 4 * sizeof (double), cudaMemcpyHostToDevice));
+  CUDA_CALL (cudaMemcpy (d_direction, resultsVector, dataSize * sizeof (unsigned int), cudaMemcpyHostToDevice));
   getNetworkWeights (neuralNet);
   while (running)
   {
@@ -52,6 +58,7 @@ void gradientDescentLoop (NeuralNet& neuralNet, int batches)
       incrementWeights << <(weightsSize + 31) / 32, 32 >> > (d_weights, d_gradient);
       CUDA_GET_ERROR ();
       updateNetworkWeights (neuralNet);
+      cudaThreadSynchronize();
 
       duration = (std::clock () - start) / (double)CLOCKS_PER_SEC;
       cout << "This batch took " << duration << endl;
@@ -62,20 +69,14 @@ void gradientDescentLoop (NeuralNet& neuralNet, int batches)
   cout << "Regression has stopped." << endl;
   cudaFree (d_weights);
   cudaFree (d_gradient);
-  cudaFree (d_singleGradient);
+  cudaFree (d_batchGradient);
   cudaFree (d_input);
-}
-
-
-void setDataVector (std::vector<Datum> data)
-{
-  dataVector = data;
+  cudaFree (d_direction);
 }
 
 void generateData ()
 {
-  dataVector.reserve (50 * 50 * 25);
-
+  int counter = 0;
   for (int lDist = 1; lDist <= 150; lDist += 4)
   {
     for (int rDist = 1; rDist <= 150; rDist += 4)
@@ -83,14 +84,32 @@ void generateData ()
       for (int fDist = 1; fDist <= 150; fDist += 4)
       {
         if (fDist > 100)
-          dataVector.push_back (Datum (lDist, fDist, rDist, Direction::forward));
+        {
+          dataVector[counter] = Datum (lDist, fDist, rDist);
+          resultsVector[counter] = Direction::forward;
+          ++counter;
+        }
         if (fDist < 50 && rDist > lDist)
-          dataVector.push_back (Datum (lDist, fDist, rDist, Direction::right));
+        {
+          dataVector[counter] = Datum (lDist, fDist, rDist);
+          resultsVector[counter] = Direction::right;
+          ++counter;
+        }
         if (fDist < 50 && lDist > rDist)
-          dataVector.push_back (Datum (lDist, fDist, rDist, Direction::left));
+        {
+          dataVector[counter] = Datum (lDist, fDist, rDist);
+          resultsVector[counter] = Direction::right;
+          ++counter;
+        }
       }
     }
   }
+}
+
+void cleanData ()
+{
+  delete[] dataVector;
+  delete[] resultsVector;
 }
 
 int getNumberOfWeights (NeuralNet& neuralNet)
@@ -128,9 +147,9 @@ void updateNetworkWeights (NeuralNet& neuralNet)
   CUDA_CALL (cudaMemcpy (neuralNet.outputLayer.d_weightMatrix, d_weightsPtr, neuralNet.outputLayer.numberOfNeurons * (neuralNet.outputLayer.numberOfInputs + 1) * sizeof (double), cudaMemcpyDeviceToDevice));
 }
 
-__global__ void normaliseGradient (double* d_gradient, int weightsSize, int scale)
+__global__ void normaliseGradient (double* d_batchGradient, unsigned int weightsSize, unsigned int batchSize)
 {
-  int i = threadIdx.x;
+  /*int i = threadIdx.x;
   double normalisation = 0;
   for (int j = 0; j < weightsSize; ++j)
   {
@@ -141,81 +160,116 @@ __global__ void normaliseGradient (double* d_gradient, int weightsSize, int scal
   if (i < weightsSize)
   {
     d_gradient[i] *= scale;
+  }*/
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < batchSize * weightsSize)
+  {
+    d_batchGradient[i] = 0;
   }
 }
 
 void calcScaledTotalGrad (NeuralNet& neuralNet)
 {
-  CUDA_CALL (cudaMemset (d_gradient, 0, weightsSize * sizeof (double)));
-  for_each (begin (dataVector), end (dataVector),
-    [&](Datum& datum) {
-    calcGradFromDatum (d_gradient, datum, neuralNet);
-  });
-  normaliseGradient << <(weightsSize + 31) / 32, 32 >> > (d_gradient, weightsSize, scale);
-  CUDA_GET_ERROR();
+  calcBatchGrad (d_batchGradient, neuralNet);
+  normaliseGradient <<<(weightsSize*dataSize + 31) / 32, 32 >>> (d_batchGradient, weightsSize, dataSize);
+  CUDA_GET_ERROR ();
 }
 
 //Only works for exactly 2 hidden layers.
-void calcGradFromDatum (double* d_gradient, const Datum& input, NeuralNet& neuralNet)
+void calcBatchGrad (double* d_batchGradient, NeuralNet& neuralNet)
 {
-  vector<double> layerGrad;
-  double toProcess[4] = { 1,  0.01 * input.lDist, 0.01 * input.fDist, 0.01 * input.rDist }; //leading 1 for affine inputs
-  CUDA_CALL (cudaMemcpy(d_input, toProcess, 4 * sizeof(double), cudaMemcpyHostToDevice));
-  neuralNet.processInput (d_input);
+  neuralNet.processInput ((double*)d_input);
 
-  double* singGradCpy = d_gradient;
-
-  gradFromFirstHidden << <1, 128 >> > (&neuralNet.outputLayer.d_dydx[input.direction * neuralNet.neuronsPerLayer], neuralNet.layers[1].d_dydx, neuralNet.layers[0].d_dydw,
-    singGradCpy, neuralNet.neuronsPerLayer, neuralNet.numberOfInputs + 1);
-  CUDA_GET_ERROR();
+  double* singGradCpy = d_batchGradient;
+  const unsigned int iSize = neuralNet.neuronsPerLayer;
+  const unsigned int jSize = neuralNet.numberOfInputs + 1;
+  const unsigned int numOutputs = neuralNet.numberOfOutputs;
+  gradFromFirstHidden <<<{(iSize* jSize + 15) / 16, (dataSize + 7) / 8}, { 16, 8 }>>> (neuralNet.outputLayer.d_dydx, neuralNet.layers[1].d_dydx, neuralNet.layers[0].d_dydw,
+    singGradCpy, d_direction, iSize, jSize, numOutputs, dataSize, weightsSize);
+  CUDA_GET_ERROR ();
   singGradCpy += neuralNet.neuronsPerLayer * (neuralNet.numberOfInputs + 1);
-  gradFromSecondHidden << <1, 512 >> > (&neuralNet.outputLayer.d_dydx[input.direction * neuralNet.neuronsPerLayer], neuralNet.layers[1].d_dydw, singGradCpy, 
-    neuralNet.neuronsPerLayer);
-  CUDA_GET_ERROR();
+  unsigned int blocks = neuralNet.neuronsPerLayer * (neuralNet.neuronsPerLayer + 1);
+  gradFromSecondHidden <<< {(blocks + 31) / 32, (dataSize + 7) / 8}, { 32, 8 } >>> (neuralNet.outputLayer.d_dydx, neuralNet.layers[1].d_dydw, singGradCpy, d_direction,
+    neuralNet.neuronsPerLayer, numOutputs, dataSize, weightsSize);
+  CUDA_GET_ERROR ();
   singGradCpy += neuralNet.neuronsPerLayer * (neuralNet.neuronsPerLayer + 1);
-  gradFromOutputLayer << <1, 64 >> > (&neuralNet.outputLayer.d_dydw[input.direction * neuralNet.numberOfOutputs * (neuralNet.neuronsPerLayer + 1)],
-    singGradCpy, neuralNet.numberOfOutputs * (neuralNet.neuronsPerLayer + 1));
-  CUDA_GET_ERROR();
+  unsigned int size = numOutputs * (neuralNet.neuronsPerLayer + 1);
+  gradFromOutputLayer <<< {(size + 31) / 32, (dataSize + 7) / 8}, { 32, 8 } >>> (neuralNet.outputLayer.d_dydw, singGradCpy, d_direction, size, numOutputs, dataSize, weightsSize);
+  CUDA_GET_ERROR ();
 }
 
-__global__ void gradFromOutputLayer (const double* d_dydw, double* singleGradient, int size)
+__global__ void gradFromOutputLayer (double* d_dydw, double* singleGradient, unsigned int* direction, const unsigned int size, const unsigned int numOutputs, const unsigned int batchSize, const unsigned int weightsSize)
 {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int batch = blockIdx.y * blockDim.y + threadIdx.y;
 
-  if (i < size)
+  if (i < size && batch < batchSize)
   {
-    singleGradient[i] = d_dydw[i];
+    singleGradient[batch * weightsSize + i] = d_dydw[batch * numOutputs * size + direction[batch] * size + i];
   }
 }
 
-__global__ void gradFromSecondHidden (double* d_dydx, double* d_dydw, double* singleGradient, int neuronsPerLayer)
+__global__ void gradFromSecondHidden (double* d_dydx, double* d_dydw, double* singleGradient, unsigned int* direction, const unsigned int neuronsPerLayer,
+  const unsigned int numOfOutputs, const unsigned int batchSize, const unsigned int weightsSize)
 {
   const int iSize = neuronsPerLayer;
   const int jSize = neuronsPerLayer + 1;
   int j = threadIdx.x;
-  if (j < jSize * iSize)
+  int batch = blockIdx.y * blockDim.y + threadIdx.y;
+  if (j < jSize * iSize && batch < batchSize)
   {
     for (int k = 0; k < iSize; ++k)
-      singleGradient[j] += d_dydx[k]
-      * d_dydw[k * iSize * jSize + j];
+      singleGradient[batch * weightsSize + j] += d_dydx[batch * numOfOutputs * iSize + direction[batch] * iSize + k]
+      * d_dydw[batch * iSize * iSize * jSize + k * iSize * jSize + j];
   }
-
-
-
 }
 
-__global__ void gradFromFirstHidden (double* d_dydxOut, double* d_dydxHid, double* d_dydw, double* singleGradient, int iSize, int jSize)
+__global__ void gradFromFirstHidden (double* d_dydxOut, double* d_dydxHid, double* d_dydw, double* singleGradient, unsigned int* direction, const unsigned int iSize, const unsigned int jSize,
+  const unsigned int numOutputs, const unsigned int batchSize, const unsigned int weightsSize)
 {
-  int j = threadIdx.x;
-  if (j < iSize * jSize)
+  const int j = threadIdx.x;
+  const int batch = blockIdx.y * blockDim.y + threadIdx.y;
+  const int lineSize = 16;
+  int lBound = iSize;
+
+  if (j < iSize * jSize && batch < batchSize)
   {
-    for (int k = 0; k < iSize; k++)
+    for(int lb = 0; lBound > 0; lb+= lineSize, lBound -= lineSize)
     {
-      for (int l = 0; l < iSize; l++)
-      {
-        singleGradient[j] +=
-          d_dydxOut[k] * d_dydxHid[k * iSize + l] * d_dydw[l * iSize * jSize + j];
-      }
-    }
-  }
+        if(lBound >= lineSize)
+        {
+            double* blockyx = &d_dydxHid[batch*iSize*jSize + lb];
+            for (int k = 0; k < iSize; k++)
+            {
+                double* yx = &blockyx[k*iSize];
+                double out = d_dydxOut[batch * numOutputs * iSize + direction[batch] * iSize + k];
+                for(int l = 0; l < lineSize; l++)
+                {
+                  singleGradient[batch * weightsSize + j] += out * yx[l] * d_dydw[batch * iSize * jSize * iSize + l * iSize * jSize + j];
+                }
+            }
+        }
+        else
+        {
+            double* blockyx = &d_dydxHid[batch*iSize*jSize + lb];
+            for (int k = 0; k < iSize; k++)
+            {
+              double* yx = &blockyx[k*iSize];
+              double out = d_dydxOut[batch * numOutputs * iSize + direction[batch] * iSize + k];
+                for(int l = 0; l < lBound; l++)
+                {
+                  singleGradient[batch * weightsSize + j] += out * yx[l] * d_dydw[batch * iSize * jSize * iSize + l * iSize * jSize + j];
+                }
+            }                    
+        }
+    }    
+    // for (int k = 0; k < iSize; k++)
+    // {
+    //   for (int l = 0; l < iSize; l++)
+    //   {
+    //     singleGradient[batch * weightsSize + j] +=
+    //       d_dydxOut[batch * numOutputs * iSize + direction[batch] * iSize + k] * d_dydxHid[batch * iSize * iSize + k * iSize + l] * d_dydw[batch * iSize * jSize * iSize + l * iSize * jSize + j];
+    //   }
+    // }
+  }      
 }

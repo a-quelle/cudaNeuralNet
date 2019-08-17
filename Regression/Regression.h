@@ -4,12 +4,12 @@ enum Direction { left, forward, right };
 
 struct Datum
 {
-    double fDist, lDist, rDist;
-    Direction direction;    
-    Datum(double lDist, double fDist, double rDist, Direction direction);
+    double one = 1, lDist, fDist, rDist;
+    Datum(double lDist, double fDist, double rDist);
+    Datum() = default;
 };
 
 void gradientDescentLoop(NeuralNet& neuralNet, int batches);
 void getNetworkWeights(NeuralNet& neuranNet);
-void setDataVector(std::vector<Datum> data);
 void generateData();
+void cleanData();

@@ -6,6 +6,7 @@
 #include <string>
 
 extern cudaError_t cudaStatus;
+const unsigned int dataSize = 37050;
 
 #define CUDA_CALL(STATEMENT)\
 	cudaStatus = STATEMENT;\
@@ -30,15 +31,16 @@ struct NeuralLayer
 	friend class NeuralNet;
 
 	NeuralLayer();
-	NeuralLayer(double* inputPtr, const int inputs, const int neurons);
+	NeuralLayer(double* inputPtr, const unsigned int inputs, const unsigned int neurons, const unsigned int batchSize);
 	NeuralLayer(NeuralLayer&  other) = delete;
 	NeuralLayer(NeuralLayer&&  other);
 	~NeuralLayer();
 	double* d_inputs = nullptr;
 	double* d_outputs = nullptr;	
 	
-	const int numberOfInputs;
-	const int numberOfNeurons;
+	const unsigned int numberOfInputs;
+	const unsigned int numberOfNeurons;
+	const unsigned int batchSize;
 	double* d_weightMatrix;
 	double* d_dydx;
 	double* d_dydw;
@@ -49,7 +51,7 @@ struct NeuralLayer
 struct HiddenLayer : NeuralLayer
 {
 	HiddenLayer();
-	HiddenLayer(double* inputPtr, const int inputs, const int neurons);
+	HiddenLayer(double* inputPtr, const unsigned int inputs, const unsigned int neurons, const unsigned int batchSize);
 	void calcDyDx();
 	void calcDyDw();
 	void processInput();
@@ -58,7 +60,7 @@ struct HiddenLayer : NeuralLayer
 struct OutputLayer : NeuralLayer
 {
 	OutputLayer();
-	OutputLayer(double* inputPtr, const int inputs, const int neurons);
+	OutputLayer(double* inputPtr, const unsigned int inputs, const unsigned int neurons, const unsigned int batchSize);
 	void calcDlnyDx();
 	void calcDlnyDw();
 	void processInput();

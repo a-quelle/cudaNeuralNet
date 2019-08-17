@@ -3,8 +3,8 @@
 
 using namespace std;
 
-NeuralNet::NeuralNet(const int inputs, const int outputs, const int nLayers, const int neurons) :
-	numberOfLayers(nLayers), numberOfInputs(inputs), numberOfOutputs(outputs), neuronsPerLayer(neurons), outputLayer(nullptr, neurons, outputs)
+NeuralNet::NeuralNet(const unsigned int inputs, const unsigned int outputs, const unsigned int nLayers, const unsigned int neurons, const unsigned int batchSize) :
+	numberOfLayers(nLayers), numberOfInputs(inputs), numberOfOutputs(outputs), neuronsPerLayer(neurons), outputLayer(nullptr, neurons, outputs, batchSize), batchSize(batchSize)
 {	
 	layers.reserve(numberOfLayers);
 	createLayers();
@@ -13,9 +13,9 @@ NeuralNet::NeuralNet(const int inputs, const int outputs, const int nLayers, con
 
 void NeuralNet::createLayers()
 {
-	layers.emplace_back(nullptr, numberOfInputs, neuronsPerLayer);
+	layers.emplace_back(nullptr, numberOfInputs, neuronsPerLayer, batchSize);
 	for (int i = 1; i < numberOfLayers; i++) {		
-		layers.emplace_back(layers.back().d_outputs, neuronsPerLayer, neuronsPerLayer);
+		layers.emplace_back(layers.back().d_outputs, neuronsPerLayer, neuronsPerLayer, batchSize);
 	}
 }
 
